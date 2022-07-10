@@ -5,17 +5,39 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"time"
 
-	"github.com/ldtrieu/grpc/calculator/calculatorpb"
+	//"github.com/ldtrieu/grpc"
+
+	"grpc/calculator/calculatorpb"
+
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
+	//"google.golang.org/grpc/status"
 )
 
 type server struct{}
 
 func (*server) Sum(ctx context.Context, req *calculatorpb.SumRequest) (*calculatorpb.SumResponse, error) {
-	log.Println("sum called")
+	log.Println("Sum called")
+	resp := &calculatorpb.SumResponse{
+		Result: req.GetNum1() + req.GetNum2(),
+	}
+	return resp, nil
+}
+func (*server) SumWithDeadline(ctx context.Context, req *calculatorpb.SumRequest) (*calculatorpb.SumResponse, error) {
+	log.Println("Sum with dedline called...")
+	for i := 0; i < 3; i++ {
+		if ctx.Err() == context.Canceled {
+			log.Println("context.Canceled...")
+			return nil, status.Errorf(codes.Canceled, "client canceled req")
+		}
+		time.Sleep(1 * time.Second)
+	}
 	resp := &calculatorpb.SumResponse{
 		Result: req.GetNum1() + req.GetNum2(),
 	}
@@ -61,12 +83,63 @@ func (*server) Average(stream calculatorpb.CalculatorService_AverageServer) erro
 	}
 }
 
+func (*server) FindMax(stream calculatorpb.CalculatorService_FindMaxServer) error {
+	log.Panicln("Find max called ...")
+	max := int32(0)
+
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+
+		}
+		if err != nil {
+			log.Fatalf("err while Recv FindMax %v", err)
+			return err
+		}
+		num := req.GetNum()
+		if num > max {
+			max = num
+		}
+		err = stream.Send(&calculatorpb.FindMaxResponse{
+			Max: max,
+		})
+		if err != nil {
+			log.Fatalf("send max err %v", err)
+			return err
+		}
+
+	}
+}
+
+func (*server) Square(ctx context.Context, req *calculatorpb.SquareRequest) (*calculatorpb.SquareResponse, error) {
+	log.Println("Square called...")
+	num := req.GetNum()
+	if num < 0 {
+		log.Printf("req num < 0, num=%v, return InvalidArgument", num)
+		return nil, status.Errorf(codes.InvalidArgument, "Expect num > 0, req num was %v", num)
+	}
+
+	return &calculatorpb.SquareResponse{
+		SquareRoot: math.Sqrt(float64(num)),
+	}, nil
+}
+
 func main() {
 	lis, err := net.Listen("tcp", "0.0.0.0:50069")
 	if err != nil {
 		log.Fatalf("err while create listen %v", err)
 	}
-	s := grpc.NewServer()
+	certFile := "ssl/server.crt"
+	keyFile := "ssl/server.pem"
+
+	creds, sslErr := credentials.NewServerTLSFromFile(certFile, keyFile)
+	if sslErr != nil {
+		log.Fatalf("create creds ssl err %v\n", sslErr)
+		return
+	}
+	opts := grpc.Creds(creds)
+	s := grpc.NewServer(opts)
 	calculatorpb.RegisterCalculatorServiceServer(s, &server{})
 
 	fmt.Println("calculator is running....")
